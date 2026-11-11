@@ -1,0 +1,90 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: ace_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-ace_root_secret}
+      MYSQL_DATABASE: ace_db
+      MYSQL_USER: ${MYSQL_USER:-ace_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ace_password}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "${MYSQL_USER:-ace_user}", "-p${MYSQL_PASSWORD:-ace_password}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  redis:
+    image: redis:7-alpine
+    container_name: ace_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ace_api
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-ace_user}:${MYSQL_PASSWORD:-ace_password}@mysql:3306/ace_db
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      ENVIRONMENT: development
+      DEBUG: "true"
+      SECRET_KEY: ${SECRET_KEY:-ace-development-insecure-secret-key-32b}
+      LOG_LEVEL: INFO
+      LOG_FORMAT: json
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ace_worker
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-ace_user}:${MYSQL_PASSWORD:-ace_password}@mysql:3306/ace_db
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      ENVIRONMENT: development
+      DEBUG: "true"
+      SECRET_KEY: ${SECRET_KEY:-ace-development-insecure-secret-key-32b}
+      LOG_LEVEL: INFO
+      LOG_FORMAT: json
+    command: >
+      celery -A app.workers.celery_app.celery_app worker --loglevel=info --concurrency=2
+
+volumes:
+  mysql_data:
+  redis_data:
